@@ -28,9 +28,10 @@
             <pre class="prettyprint source linenums"><code>var _ = require('lodash')
     , EventEmitter = require('events').EventEmitter
     , util = require('util')
+    , sprintf = util.format
     , fs = require('fs')
-    , moment = require('moment')
-    , CConf = require('node-cconf');
+    , CConf = require('node-cconf')
+    , CPlate = require('node-cplate').CPlate;
 
 /**
  * Transport - A logging transport base class used by {@link CLogger.transports}.
@@ -42,17 +43,17 @@
  * @description Transport implementations inherit from this class and have to listen to
  * the 'log' event.
  */
-function Transport(name, opts) {
-    name = name || 'transport';
+function Transport(opts) {
+    opts = opts || {};
+    opts.name = opts.name || 'transport';
 
     EventEmitter.apply(this);
 
-    this.name = name;
-    this.config = new CConf(name).setDefault('filters', {}).load(opts || {}).addRequired('format');
+    var config = new CConf(opts.name).setDefault('filter', {}).load(opts);
 
     var filters = {
             /**
-             * @method Transport.config.filters
+             * @method Transport.config.filter
              * @description A set of pre-defined filter functions for working with variables
              * in log-messages. These set contains the functions 'value', 'datetime', 'uppercase',
              * 'colorize' and 'capitalize'. Custom filters can be added in the transport configuration
@@ -67,7 +68,7 @@ function Transport(name, opts) {
              * var logFileTransport = new CLogger.transports.LogFile({
              *      'filename': '{{dirname}}/server.log',
              *      'format': '{{value:level|uppercase|colorize}}: {{value:message|capitalize|colorize:green}}',
-             *      filters: {
+             *      filter: {
              *          'dirname': function() {
              *              return __dirname;
              *          }
@@ -76,127 +77,44 @@ function Transport(name, opts) {
              * var logger = new CLogger('server').addTransport(logFileTransport);
              * logger.info('This message goes to a logfile and the console...');
              */
-            value: function(value, param, args) {
-                value = args[param];
-                if (_.isUndefined(value)) {
-                    throw new Error('Value parameter must be a valid log message variable');
-                }
-                return value;
-            },
-            datetime: function(value) {
-                try {
-                    return moment(value).format('MMMM Do YYYY, hh:mm:ss');
-                } catch (err) {
-                    throw new TypeError('Datetime parameter must be a valid "Date"!');
-                }
-            },
-            uppercase: function(value) {
-                if (_.isString(value)) {
-                    return value.toUpperCase();
-                } else {
-                    throw new TypeError('Uppercase parameter must be from type "String"!');
-                }
-            },
-            colorize: function(value, param, args) {
-                if (_.isString(param)) {
-                    return value[param];
-                } else {
-                    var colors = this.config.getValue('colors');
-                    if (_.isPlainObject(colors) &amp;&amp; value) {
-                        return value.toString()[colors[args.level]];
-                    } else {
-                        throw new TypeError('Colorize parameter must be from type "String"!');
-                    }
-                }
-            },
-            capitalize: function(value) {
-                if (_.isString(value)) {
-                    return value.split('-').map(function(value) {
-                        return value &amp;&amp; value[0].toUpperCase() + value.slice(1);
-                    }).join('');
-                } else {
-                    throw new TypeError('Capitalize parameter must be from type "String"!');
-                }
+            difference: function(value) {
+                return sprintf('+%sms', value);
             }
         };
-    this.config.setValue('filters', _.merge(this.config.getValue('filters'), filters));
+    config.setValue('filter', _.merge(filters, config.getValue('filter')));
+
+    var cplate = new CPlate();
+    _.forOwn(config.getValue('filter'), function(filter, name) {
+        cplate.registerFilter(name, filter);
+    });
+
+    this.config = config;
+    this.template = cplate;
 }
 
 util.inherits(Transport, EventEmitter);
 
-/**
- * @method Transport.formatString
- * @private
- * @param {string} str - A format string containing placeholder.
- * @param {object} args - An object with values for replacing with placeholder.
- * @return {string} - A string, ready to write to log-target.
- * @description This method is used internally to format properties like the
- * log-message or the log-filename.
- */
-Transport.prototype.formatString = function(str, args) {
-    if (_.isString(str) &amp;&amp; _.isPlainObject(args)) {
-        _.forEach(str.match(/\{\{.*?\}\}/g), function(placeholder) {
-            var filters = placeholder.replace(/\{\{|\}\}/g, '').split('|')
-                .map(function(value) {
-                    return value.trim();
-                });
-            str = str.replace(placeholder, this.applyFilter(filters, args));
-        }, this);
+module.exports.Transport      = Transport;
+module.exports.Console        = require('./transports/console');
+module.exports.CustomFunction = require('./transports/custom-function');
+module.exports.LogFile        = require('./transports/log-file');
+module.exports.TaffyDb        = require('./transports/taffy-db');
 
-        return str;
-    } else {
-        throw new Error('Invalid arguments to format log message!');
-    }
-};
-
-/**
- * @method Transport.applyFilter
- * @private
- * @param {array} filters - An array with filternames to be applied.
- * @param {object} args - An object, holding filter arguments.
- * @return {*} - The filtered value.
- * @description This method is used internally to apply filters to values.
- */
-Transport.prototype.applyFilter = function(filters, args) {
-    if (_.isArray(filters)) {
-        var value = null
-            , filterFuncs = this.config.getValue('filters');
-        _.forEach(filters, function(filter) {
-            var params = filter.split(':').map(function(value) { return value.trim(); });
-            var fn = filterFuncs[params.shift()];
-            if (_.isFunction(fn)) {
-                value = fn.apply(this, [value, params.shift(), args]);
-            } else {
-                throw new TypeError('Configured filter "' + filter + '" is not from type "function"!');
-            }
-        }, this);
-
-        return value;
-    } else {
-        throw new TypeError('Invalid filter settings for Transport "' + this.id + '"!');
-    }
-};
-
-module.exports.Transport = Transport;
-
-String.prototype.capitalize = function() {
-    var str = _.toArray(this).join('');
-    return str &amp;&amp; str[0].toUpperCase() + str.slice(1);
-};
-
+/*
 var dir = __dirname + '/transports';
 _.forEach(fs.readdirSync(dir), function(filename) {
     if (fs.statSync(dir.concat('/', filename)).isFile() &amp;&amp; filename.match(/.*\.js$/)) {
-        var name = filename.capitalize();
+        var name = filename[0].toUpperCase() + filename.slice(1);
         if (_.indexOf(filename, '-')) {
             name = _.map(filename.split('-'), function(part) {
-                return part.capitalize();
+                return part &amp;&amp; part[0].toUpperCase() + part.slice(1);
             }).join('');
         }
 
         module.exports[name.replace('.js', '')] = require(dir.concat('/', filename));
     }
 });
+*/
 </code></pre>
         </article>
     </section>
@@ -213,7 +131,7 @@ _.forEach(fs.readdirSync(dir), function(filename) {
 <br clear="both">
 
 <footer>
-    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.3.0-alpha9</a> on Fri Aug 22 2014 14:25:38 GMT+0200 (CEST)
+    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.3.0-alpha9</a> on Sat Oct 04 2014 18:24:45 GMT+0200 (CEST)
 </footer>
 
 <script> prettyPrint(); </script>
