@@ -28,6 +28,7 @@
             <pre class="prettyprint source linenums"><code>var _ = require('lodash')
     , EventEmitter = require('events').EventEmitter
     , util = require('util')
+    , sprintf = util.format
     , q = require('q')
     , shortid = require('shortid')
     , findops = require('./find-ops')
@@ -71,7 +72,18 @@ function CModel(opts, data) {
  * @property {array} - A list of deleted documents.
  * @description This event is fired on deleting documents.
  */
+/**
+ * @event CModel#change
+ * @property {array} - A list of all currently stored documents.
+ * @description This event is fired on inserting, updating and deleting.
+ */
 util.inherits(CModel, EventEmitter);
+
+CModel.prototype.__defineGetter__('classname', function() { return 'CModel'; });
+
+CModel.prototype.toString = function() {
+    return sprintf('%s [%s]', this.classname, this.config.getValue('name'));
+};
 
 /**
  * @method CModel.insert
@@ -85,10 +97,28 @@ CModel.prototype.insert = function(doc) {
         doc['_id'] = shortid.generate();
         this.data.push(doc);
         this.emit('insert', doc);
+        this.emit('change', this.data);
         return doc;
     } else {
-        throw new TypeError('CModel.insert accepts only an object as argument!');
+        throw new TypeError(sprintf('%s.insert accepts only an object as argument!', this.classname));
     }
+};
+
+/**
+ * @method CModel.insertOrUpdate
+ * @param {object} query - See {@link CModel.find} for valid queries.
+ * @param {object} doc - The document to merge or insert.
+ * @return {array} - An array of updated or inserted documents.
+ * @description Update documents in the collection and return these
+ * updated documents or insert document into collection, if nothing
+ * can be updated.
+ */
+CModel.prototype.insertOrUpdate = function(query, doc) {
+    var updated = this.update(query, doc);
+    if (!updated.length) {
+        updated.push(this.insert(doc));
+    }
+    return updated;
 };
 
 /**
@@ -110,7 +140,7 @@ CModel.prototype.findById = function(id) {
             i--;
         }
     } else {
-        throw new TypeError('CModel.findById accepts only strings as arguments!');
+        throw new TypeError(sprintf('%s.findById accepts only a string as argument!', this.classname));
     }
 
     return undefined;
@@ -165,23 +195,32 @@ CModel.prototype.find = function(query) {
             return found;
         });
     } else {
-        throw new TypeError('CModel.find accepts only an object as argument!');
+        throw new TypeError(sprintf('%s.find accepts only an object as argument!', this.classname));
     }
 
     return _.uniq(result, '_id');
 };
 
-CModel.prototype.findAsync = function(query) {
-    var self = this
-        , defer = q.defer();
+/**
+ * @method CModel.findAnd
+ * @param {object} query - A search field or a query.
+ * @return {object} this
+ * @description Same as find, except it cache results and return this.
+ * Can be used to create a chain with orderBy.
+ */
+CModel.prototype.findAnd = function(query) {
+    this.lastFind = this.find(query);
+    return this;
+};
 
-    q.fcall(function() {
-        return self.find(query);
-    })
-    .then(defer.resolve)
-    .catch(defer.reject);
-
-    return defer.promise;
+/**
+ * @method CModel.orderBy
+ * @param {array|function|object|string} arg - Value to sort by.
+ * @return {array} - The sorted search results.
+ * @description Sort and return the last executed find by a given value.
+ */
+CModel.prototype.orderBy = function(arg) {
+    return _.sortBy(this.lastFind, arg, this);
 };
 
 /**
@@ -191,20 +230,27 @@ CModel.prototype.findAsync = function(query) {
  * @description Find the first valid document for a query.
  */
 CModel.prototype.findOne = function(query) {
-    return this.find(query)[0];
+    return CModel.prototype.find.call(this, query)[0];
 };
 
-CModel.prototype.findOneAsync = function(query) {
-    var self = this
-        , defer = q.defer();
+/**
+ * @method CModel.findAll
+ * @return {object} - All documents from collection.
+ * @description Wrapper around this.data.
+ */
+CModel.prototype.findAll = function() {
+    return this.data;
+};
 
-    q.fcall(function() {
-        return self.findOne(query);
-    })
-    .then(defer.resolve)
-    .catch(defer.reject);
-
-    return defer.promise;
+/**
+ * @method CModel.findAllAnd
+ * @return {object} this
+ * @description Same as findAll, but returning this to create chain
+ * with orderBy.
+ */
+CModel.prototype.findAllAnd = function() {
+    this.lastFind = this.findAll();
+    return this;
 };
 
 /**
@@ -225,26 +271,14 @@ CModel.prototype.update = function(query, doc) {
             item = _.merge(item, doc);
         });
     } else {
-        throw new TypeError('CModel.update accepts only objects as arguments!');
+        throw new TypeError(sprintf('%s.update accepts only objects as arguments!', this.classname));
     }
 
     if (result.length) {
         this.emit('update', result);
+        this.emit('change', this.data);
     }
     return result;
-};
-
-CModel.prototype.updateAsync = function(query, doc) {
-    var self = this
-        , defer = q.defer();
-
-    q.fcall(function() {
-        return self.update(query, doc);
-    })
-    .then(defer.resolve)
-    .catch(defer.reject);
-
-    return defer.promise;
 };
 
 /**
@@ -269,7 +303,7 @@ CModel.prototype.updateById = function(id, doc) {
             i--;
         }
     } else {
-        throw new TypeError('CModel.updateById accepts only strings as arguments!');
+        throw new TypeError(sprintf('%s.updateById accepts only strings as arguments!', this.classname));
     }
 
     return undefined;
@@ -296,26 +330,14 @@ CModel.prototype.delete = function(query) {
             return _.indexOf(remove, doc['_id']) > -1 ? false : true;
         });
     } else {
-        throw new TypeError('CModel.delete accepts only an object as argument!');
+        throw new TypeError(sprintf('%s.delete accepts only an object as argument!', this.classname));
     }
 
     if (result.length) {
         this.emit('delete', result);
+        this.emit('change', this.data);
     }
     return result;
-};
-
-CModel.prototype.deleteAsync = function(query) {
-    var self = this
-        , defer = q.defer();
-
-    q.fcall(function() {
-        return self.delete(query);
-    })
-    .then(defer.resolve)
-    .catch(defer.reject);
-
-    return defer.promise;
 };
 
 /**
@@ -330,7 +352,7 @@ CModel.prototype.deleteById = function(id) {
     if (deleted.length === 1) {
         return deleted[0];
     } else {
-        throw new RuntimeError('Deleted documents with no uniqe id field!');
+        throw new Error('Deleted documents had no uniqe id field!');
     }
 };
 
@@ -345,13 +367,13 @@ module.exports = CModel;
 </div>
 
 <nav>
-    <h2><a href="index.html">Index</a></h2><h3>Classes</h3><ul><li><a href="CModel.html">CModel</a></li><li><a href="CStore.html">CStore</a></li></ul><h3>Events</h3><ul><li><a href="CModel.html#event:delete">delete</a></li><li><a href="CModel.html#event:insert">insert</a></li><li><a href="CModel.html#event:update">update</a></li></ul>
+    <h2><a href="index.html">Index</a></h2><h3>Classes</h3><ul><li><a href="CModel.html">CModel</a></li><li><a href="CQModel.html">CQModel</a></li><li><a href="CQStore.html">CQStore</a></li><li><a href="CSModel.html">CSModel</a></li><li><a href="CStore.html">CStore</a></li></ul><h3>Events</h3><ul><li><a href="CModel.html#event:change">change</a></li><li><a href="CModel.html#event:delete">delete</a></li><li><a href="CModel.html#event:insert">insert</a></li><li><a href="CModel.html#event:update">update</a></li></ul>
 </nav>
 
 <br clear="both">
 
 <footer>
-    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.3.0-alpha9</a> on Fri Aug 22 2014 14:50:46 GMT+0200 (CEST)
+    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.3.0-alpha9</a> on Wed Oct 08 2014 19:18:17 GMT+0200 (CEST)
 </footer>
 
 <script> prettyPrint(); </script>
